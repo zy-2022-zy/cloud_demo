@@ -1,37 +1,107 @@
 # Cloud Browser Agent
 
-A local Python service that controls the existing Chromium instance on the Debian server through an SSH-forwarded Chrome DevTools Protocol (CDP) endpoint.
+基于 Python、FastAPI 和 Playwright 的云浏览器控制服务。
 
-## Architecture
+本项目运行在 Windows 本地，通过 SSH 隧道连接 Debian 服务器上的 Docker Chromium，并通过 HTTP API 提供浏览器操作能力，为后续接入 WorkBuddy、自研 Agent 和 MCP 做准备。
+
+## 一、项目架构
 
 ```text
-WorkBuddy / Agent
-       |
-       | HTTP + X-API-Key (planned MCP adapter can call this API)
-       v
-Windows: FastAPI + Playwright
-       |
-       | http://127.0.0.1:19222
-       v
-SSH tunnel
-       |
-       v
-Debian Docker: Chromium CDP :9222
+WorkBuddy / 自研 Agent
+        |
+        | HTTP + X-API-Key
+        v
+Windows 本地服务
+FastAPI + Playwright
+        |
+        | http://127.0.0.1:19222
+        v
+SSH 隧道
+        |
+        v
+Debian 服务器
+Docker Chromium :9222
 ```
 
-This project does **not** launch a second browser. It connects to the already-running remote Chromium. The remote browser and its persistent profile remain managed by the existing Docker service.
+当前服务连接已有的远程 Chromium，不会另外启动一个浏览器。浏览器进程及其持久化配置由服务器上的 Docker 服务管理。
 
-## Requirements
+## 二、运行环境
 
-- Windows 10/11
-- Python 3.11 or newer
+- Windows 10 / 11
+- Python 3.11
+- Conda
 - Git
-- The Debian cloud-browser Docker container running
-- SSH access to the Debian server
+- VS Code
+- Debian 服务器上的云浏览器 Docker 服务
+- 可用的 SSH 连接
 
-## 1. Start the SSH tunnel
+## 三、项目目录
 
-Open a dedicated Windows PowerShell window and keep it open:
+```text
+cloud_demo/
+├── app/
+│   ├── __init__.py
+│   ├── config.py       # 配置管理
+│   ├── browser.py      # Playwright 浏览器操作
+│   └── main.py         # FastAPI 接口及鉴权
+├── .env.example       # 环境变量模板
+├── .env               # 本地环境配置，不提交 Git
+├── .gitignore
+├── requirements.txt
+└── README.md
+```
+
+## 四、部署与启动
+
+### 1. 克隆项目
+
+```powershell
+git clone https://github.com/zy-2022-zy/cloud_demo.git
+cd cloud_demo
+git switch feature/cloud-browser-mvp
+code .
+```
+
+### 2. 创建 Python 环境
+
+使用 Conda 创建环境：
+
+```powershell
+conda create -n cloud-browser python=3.11 -y
+conda activate cloud-browser
+```
+
+安装项目依赖：
+
+```powershell
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+### 3. 配置环境变量
+
+复制环境变量模板：
+
+```powershell
+Copy-Item .env.example .env
+```
+
+编辑项目根目录下的 `.env`：
+
+```env
+CDP_URL=http://127.0.0.1:19222
+API_KEY=替换为至少32位的随机密钥
+```
+
+注意：
+
+- `CDP_URL` 是本地 SSH 隧道转发后的 CDP 地址。
+- `API_KEY` 用于验证 API 调用权限，至少32个字符。
+- `.env` 仅用于本地配置，不要提交到 Git，也不要分享给他人。
+
+### 4. 建立 SSH 隧道
+
+打开一个独立的 PowerShell 窗口，执行：
 
 ```powershell
 ssh -N `
@@ -41,105 +111,137 @@ ssh -N `
   root@172.16.9.18
 ```
 
-The API uses the forwarded CDP endpoint `http://127.0.0.1:19222`. The noVNC page remains available at `http://127.0.0.1:16080/vnc.html?autoconnect=true`.
+保持该窗口运行，不要关闭。
 
-## 2. Open the project in VS Code
+远程浏览器可视化地址：
 
-Clone the repository and switch to the implementation branch:
+http://127.0.0.1:16080/vnc.html?autoconnect=true
+
+CDP 连接地址：
+
+http://127.0.0.1:19222
+
+### 5. 启动 FastAPI 服务
+
+在 VS Code 终端中执行：
 
 ```powershell
-git clone https://github.com/zy-2022-zy/cloud_demo.git
-cd cloud_demo
-git switch feature/cloud-browser-mvp
-code .
+conda activate cloud-browser
+python -m uvicorn app.main:app
 ```
 
-## 3. Create a virtual environment
+注意：当前 Windows 环境下不要添加 `--reload`。Playwright 的异步连接需要使用兼容的事件循环，启用 Uvicorn 热重载可能导致连接失败。
 
-Run in the VS Code terminal (PowerShell):
+服务默认监听：
 
-```powershell
-py -3 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-pip install -r requirements.txt
+```text
+http://127.0.0.1:8000
 ```
 
-If PowerShell blocks activation, use this for the current terminal only:
+API 文档：
 
-```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\.venv\Scripts\Activate.ps1
+http://127.0.0.1:8000/docs
+
+修改代码后，使用 `Ctrl + C` 停止服务，再重新启动。
+
+## 五、接口调用
+
+所有 `/api/*` 接口都需要在请求头中携带：
+
+```text
+X-API-Key: 你的API密钥
 ```
 
-## 4. Configure local settings
+在另一个 PowerShell 窗口中读取本地密钥：
 
 ```powershell
-Copy-Item .env.example .env
+$apiKey = (Get-Content .env | Where-Object { $_ -match '^API_KEY=' } | Select-Object -First 1) -replace '^API_KEY=', ''
+$apiKey = $apiKey.Trim()
+$headers = @{ "X-API-Key" = $apiKey }
 ```
 
-Open `.env` and replace `API_KEY` with a long random value. Do not commit `.env` or share the key. The default CDP URL is already set to `http://127.0.0.1:19222`.
+不要打印或分享 `$apiKey`。
 
-## 5. Start the API
+### 1. 健康检查
 
 ```powershell
-uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+Invoke-RestMethod http://127.0.0.1:8000/health
 ```
 
-Keep the API bound to loopback. Do not expose this browser-control API directly to the public internet.
-
-Open the interactive API docs at [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs).
-
-## 6. Verify the remote browser connection
-
-In another PowerShell terminal, set the same API key that you configured in `.env`:
+### 2. 获取浏览器连接状态
 
 ```powershell
-$env:CLOUD_BROWSER_API_KEY = "your-local-api-key"
-$headers = @{ "X-API-Key" = $env:CLOUD_BROWSER_API_KEY }
 Invoke-RestMethod http://127.0.0.1:8000/api/browser/status -Headers $headers
+```
+
+### 3. 获取浏览器标签页
+
+```powershell
 Invoke-RestMethod http://127.0.0.1:8000/api/browser/pages -Headers $headers
 ```
 
-Open a page:
+### 4. 打开网页
 
 ```powershell
-$body = @{ url = "https://example.com" } | ConvertTo-Json
-Invoke-RestMethod http://127.0.0.1:8000/api/browser/navigate -Method Post -Headers $headers -ContentType "application/json" -Body $body
-Invoke-RestMethod http://127.0.0.1:8000/api/browser/snapshot -Headers $headers
+$body = @{
+    url = "https://example.com"
+    page_index = 0
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+    http://127.0.0.1:8000/api/browser/navigate `
+    -Method Post `
+    -Headers $headers `
+    -ContentType "application/json" `
+    -Body $body
 ```
 
-## API endpoints
+### 5. 获取网页内容
 
-All `/api/*` endpoints require the `X-API-Key` header.
+```powershell
+Invoke-RestMethod `
+    "http://127.0.0.1:8000/api/browser/snapshot?page_index=0" `
+    -Headers $headers
+```
 
-| Method | Endpoint | Purpose |
+### 6. 点击网页元素
+
+```powershell
+$body = @{
+    selector = "text=Sign in"
+    page_index = 0
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+    http://127.0.0.1:8000/api/browser/click `
+    -Method Post `
+    -Headers $headers `
+    -ContentType "application/json" `
+    -Body $body
+```
+
+### 7. 填写网页输入框
+
+```powershell
+$body = @{
+    selector = "input[name='username']"
+    value = "example"
+    page_index = 0
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+    http://127.0.0.1:8000/api/browser/fill `
+    -Method Post `
+    -Headers $headers `
+    -ContentType "application/json" `
+    -Body $body
+```
+
+## 六、API 接口清单
+
+| 请求方式 | 接口 | 功能 |
 |---|---|---|
-| GET | `/health` | API process health |
-| GET | `/api/browser/status` | CDP connection and browser version |
-| GET | `/api/browser/pages` | List tabs |
-| POST | `/api/browser/navigate` | Navigate a tab |
-| GET | `/api/browser/snapshot` | Read page title, URL and body text |
-| POST | `/api/browser/click` | Click the first matching selector |
-| POST | `/api/browser/fill` | Fill the first matching input |
-
-Example click request body:
-
-```json
-{ "selector": "text=Sign in", "page_index": 0 }
-```
-
-Example fill request body:
-
-```json
-{ "selector": "input[name='username']", "value": "example", "page_index": 0 }
-```
-
-## Security notes
-
-- API listens on `127.0.0.1` by default and requires an API key for browser operations.
-- Keep `.env` private. Never commit passwords, SMS codes, session cookies, or API keys.
-- Do not log form values or authentication codes.
-- This MVP is intended for one local developer session. Before multi-user deployment, add per-user browser contexts, authorization, rate limits, audit redaction and credential expiry.
-- Human verification, CAPTCHA, MFA and QR-code steps must pause for the user rather than be bypassed.
-- The API disconnects its Playwright client on shutdown; it does not close the remote Chromium process.
+| GET | `/health` | 服务健康检查 |
+| GET | `/api/browser/status` | 浏览器连接状态 |
+| GET | `/api/browser/pages` | 获取标签页列表 |
+| POST |
