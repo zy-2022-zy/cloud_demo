@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+import traceback
 import secrets
 from contextlib import asynccontextmanager
 from typing import Annotated
@@ -68,8 +68,16 @@ async def browser_status():
     try:
         return await browser_session.status()
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"CDP connection failed: {exc}") from exc
+        print("\n========== CDP ERROR ==========")
+        print("异常类型：", type(exc).__name__)
+        print("异常内容：", repr(exc))
+        traceback.print_exc()
+        print("========== END ERROR ==========\n")
 
+        raise HTTPException(
+            status_code=502,
+            detail=f"CDP connection failed: {type(exc).__name__}: {repr(exc)}",
+        ) from exc
 
 @app.get("/api/browser/pages", dependencies=[Depends(require_api_key)])
 async def browser_pages():
